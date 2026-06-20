@@ -75,3 +75,7 @@ python -m nanobot.dnd.db.cli rules ingest-srd
 ## 许可证
 
 SRD 5.2.1 文件采用 CC-BY-4.0 许可。其余代码采用 MIT 许可。
+
+## 致谢
+
+- [ackiles/dnd-dm-skill](https://github.com/ackiles/dnd-dm-skill) — 灵感与参考
