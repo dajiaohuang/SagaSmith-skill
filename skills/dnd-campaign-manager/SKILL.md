@@ -1,6 +1,6 @@
 ---
 name: dnd-campaign-manager
-description: Manage D&D campaigns stored in the shared database. Use for creating, listing, selecting, archiving, saving, verifying, loading, or undoing campaigns and complete database snapshots, including campaign-scoped player-role notes synchronized with USER.md.
+description: Manage D&D campaigns stored in the shared database. Use for creating, listing, selecting, archiving, saving, verifying, loading, or undoing campaigns and complete database snapshots, including campaign-scoped player-role notes synchronized with USER.md. Supports character library (PC/NPC), rule set selection, and ChromaDB vector storage.
 ---
 
 # D&D Campaign Manager
@@ -27,7 +27,7 @@ managed player-role block in `USER.md`; it never replaces the whole file.
 
 3. If exactly one active campaign exists, select it. If multiple exist, ask the
    user which campaign to use. Never infer from save slot numbers.
-4. Treat “switch campaign” as selecting another campaign ID for the current
+4. Treat "switch campaign" as selecting another campaign ID for the current
    conversation. This version deliberately has no channel binding.
 
 ## Manage campaigns
@@ -36,7 +36,22 @@ Create only after the user asks to start a new campaign.
 
 ### 开团流程
 
-**Step 1 — 确定模组来源。** 先检查数据库中已有哪些模组：
+**Step 1 — 确定规则版本。** 检查当前可用的规则集：
+
+```
+dnd_rules action=status
+```
+
+返回 `rule_sets` 列表（含 game_system / edition / release / locale 和 chunk 数量）。
+至少包含三种内置规则：
+
+- `dnd5e-2024-srd-5.2.1` — D&D 5e 2024 / SRD 5.2.1（英文，推荐）
+- `dnd5e-2014-srd-5.1-en` — D&D 5e 2014 / SRD 5.1（英文）
+- `dnd5e-2014-srd-5.1-zh-v2` — D&D 5e 2014 / SRD 5.1（中文）
+
+首次使用时规则集自动入库（lazy ingest），无需手动 CLI。
+
+**Step 2 — 确定模组来源。** 先检查数据库中已有哪些模组：
 
 ```
 dnd_module action=status
@@ -47,13 +62,19 @@ dnd_module action=status
 - **使用已有模组**：跳过导入，直接 `dnd_campaign action=start` 并指定 `module_name` 匹配已有模组名。
 - **导入新模组**：见下方"导入新模组"。
 
-**Step 2 — 一键开团：**
+**Step 3 — 一键开团：**
 
 ```
-dnd_campaign action=start name="战役名称" module_name="模组名称" [source_path="<path>"]
+dnd_campaign action=start name="战役名称" module_name="模组名称" \
+  rule_set_id="dnd5e-2024-srd-5.2.1" \
+  publication_ids=["publication-srd-5.2.1"] \
+  [source_path="<path>"]
 ```
 
-自动完成：创建战役 + 绑定规则 + 初始存档 (slot 1) + 可选导入模组。
+不指定 `rule_set_id` 时自动选用最新的活跃规则集（默认 2024 SRD 5.2.1）。
+不指定 `publication_ids` 时自动启用核心规则书。
+
+自动完成：创建战役 + 绑定规则与扩展 + 初始存档 (slot 1) + 可选导入模组。
 
 ### 导入新模组
 
@@ -102,6 +123,38 @@ python -m <domain-cli> campaign status --campaign <campaign-id> --set archived
 ```
 
 Do not save into or load an archived campaign until it is explicitly reactivated.
+
+## Character library
+
+Characters are decoupled from campaigns: PCs are campaign-bound, NPCs live in
+a global library.
+
+```
+# Campaign PCs
+dnd_character action=list campaign_id=<id>
+
+# Global NPC library
+dnd_character action=list type=npc
+
+# Create PC (bound to campaign)
+dnd_character action=create type=pc campaign_id=<id> name="角色名" player="玩家名" ...
+
+# Create NPC (global library)
+dnd_character action=create type=npc name="NPC名" race="..." alignment="..." ...
+
+# Get details
+dnd_character action=get character_id=<id>
+```
+
+CLI fallback:
+
+```powershell
+python -m <domain-cli> character create --type pc --campaign <id> --name "..." --player "..."
+python -m <domain-cli> character create --type npc --name "..." --race "..." --alignment "..."
+python -m <domain-cli> character list --campaign <id>
+python -m <domain-cli> character list --type npc
+python -m <domain-cli> character show --character <id>
+```
 
 ## Import module content
 
@@ -159,12 +212,14 @@ python -m <domain-cli> module scene `
 ```
 
 For discovery, search the active module with the resident `dnd_module` tool (`action=search`),
-which combines lexical and BGE-M3 Dense retrieval. Expand the selected chunk before relying on
+which combines lexical substring matching and BGE-M3 Dense retrieval (ChromaDB HNSW when
+configured, falling back to in-memory numpy). Expand the selected chunk before relying on
 the complete scene. Use the CLI only for maintenance:
 
 ```powershell
 python -m <domain-cli> module search --campaign <campaign-id> `
   --query "<地点、NPC、事件或线索>" --top-k 5
+python -m <domain-cli> vector status
 ```
 
 ## Run module progress
@@ -198,8 +253,10 @@ dnd_save action=export campaign_id=<id> slot=1 output="save.json"
 ```
 
 Before a save whose label or surrounding conversation claims that character creation is
-complete, run `character list` for the campaign. If an expected character is absent, stop
-and persist it using the character-creation procedure; never create a misleading empty save.
+complete, check `dnd_character action=list campaign_id=<id>`. If an expected character is
+absent, stop and persist it via `dnd_character action=create` before saving. PC characters
+are bound to campaigns; NPCs live in the global library (`dnd_character action=list type=npc`).
+Never create a misleading empty save.
 
 The CLI below is the maintenance fallback:
 
