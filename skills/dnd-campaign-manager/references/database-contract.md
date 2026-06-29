@@ -16,6 +16,7 @@ A complete snapshot contains campaign metadata and configuration plus:
 - plot summaries and campaign events;
 - mutable module progress such as scene state;
 - campaign-scoped player/character channel records if present.
+- a player-facing recap generated from the delta against the previous save.
 
 Module source documents, chapter metadata, and scene indexes are immutable imported content.
 They remain in the database across restores and are referenced by scene-state IDs rather than
@@ -24,6 +25,17 @@ copied into every snapshot.
 Snapshot rows, tool audit history, state revisions, dice audit history, and global
 rule/compendium data are intentionally not nested into a snapshot. Restoring a
 snapshot retains those historical records.
+
+## Campaign memory
+
+`campaign_memories` stores campaign-scoped narrative facts derived from recap
+`memory_candidates` and `future_impact`. It is outside snapshot boundaries:
+restoring an older save does not delete or roll back long-term memories.
+
+Each memory uses `(campaign_id, entity_type, entity_id, fact_type)` as its stable
+identity so a later recap updates the same fact instead of creating a near-duplicate.
+High-priority facts become `permanent`, medium-priority facts become `candidate`,
+and low-priority facts remain only in the snapshot recap.
 
 ## Vector storage
 
@@ -53,13 +65,17 @@ never rewrite campaign identity.
 ## USER.md projection
 
 `Campaign.config.user_md_player_roles` is the database copy of the managed
-campaign block in `USER.md`. `--workspace` synchronizes it:
+campaign block in `USER.md`. Only an explicit workspace synchronization path
+may project this player-role mapping:
 
 - save: USER.md block -> campaign config -> snapshot;
 - load: snapshot -> campaign config -> USER.md block;
 - undo: restored campaign config -> USER.md block.
 
-The rest of `USER.md` is outside campaign state and must remain unchanged.
+Native save, restore, recap, and campaign-memory operations never write
+`USER.md`. Narrative facts, NPC relationships, plot state, and quest state
+belong in `campaign_memories`, not `USER.md`. The rest of `USER.md` is outside
+campaign state and must remain unchanged.
 
 ## Errors
 

@@ -594,3 +594,14 @@ class RuleIngestService:
                     )
                 )
             return profile.id
+
+
+def ensure_bundled_rules_ingested(database: Database) -> dict[str, IngestResult]:
+    """No-op for skills package — bundled rules are not included here.
+
+    In the full agent repo this ingests all bundled SRD rule sets on first
+    access.  The skills package expects rules to be ingested separately via
+    the import tool.
+    """
+    return {}
+

@@ -21,12 +21,25 @@ from .module import (
     SceneIndex,
     SceneState,
 )
-from .runtime import CampaignEvent, CampaignSave, Combat, PlotSummary
+from .runtime import (
+    CampaignEvent,
+    CampaignMemory,
+    CampaignMemoryRevision,
+    CampaignSave,
+    CampaignSaveAncestor,
+    CampaignTimelineHead,
+    Combat,
+    PlotSummary,
+)
 
 __all__ = [
     "Campaign",
     "CampaignEvent",
+    "CampaignMemory",
+    "CampaignMemoryRevision",
     "CampaignSave",
+    "CampaignSaveAncestor",
+    "CampaignTimelineHead",
     "CampaignRuleProfile",
     "CampaignRulePublication",
     "ChannelBinding",

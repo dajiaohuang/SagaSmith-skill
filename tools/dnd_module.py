@@ -10,12 +10,13 @@ from sqlalchemy import func, select
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import current_request_context
-from nanobot.dnd.db.database import Database
-from nanobot.dnd.db.models import ModuleChunk, ModuleSource
-from nanobot.dnd.db.module_content import ModuleImportService
-from nanobot.dnd.db.module_progress import ModuleProgressService
-from nanobot.dnd.modules.search import ModuleSearchService
-from nanobot.dnd.rules.embedding import BgeM3Embedder
+from domain.db.database import Database
+from domain.db.models import ModuleChunk, ModuleSource
+from domain.db.module_content import ModuleImportService
+from domain.db.module_progress import ModuleProgressService
+from domain.modules.search import ModuleSearchService
+from domain.rules.embedding import BgeM3Embedder
+from domain.vector.client import VectorStore
 
 
 @tool_parameters(
@@ -171,7 +172,7 @@ class DndModuleTool(Tool):
             conditions = []
             if resolved_campaign:
                 conditions.append(ModuleSource.campaign_id == resolved_campaign)
-            return {
+            result: dict[str, Any] = {
                 "modules": int(
                     session.scalar(
                         select(func.count()).select_from(ModuleSource).where(*conditions)
@@ -197,6 +198,15 @@ class DndModuleTool(Tool):
                     or 0
                 ),
             }
+        store = VectorStore()
+        if store.enabled:
+            try:
+                result["chromadb"] = store.collection_stats("dnd_modules")
+            except Exception:
+                result["chromadb"] = {"name": "dnd_modules", "error": "unreachable"}
+        else:
+            result["chromadb"] = None
+        return result
 
     async def execute(
         self,

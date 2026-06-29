@@ -1,6 +1,6 @@
 ---
 name: sagasmith
-description: "Autonomous D&D 5e AI Dungeon Master — campaign lifecycle management, module generation (5 types × 25 paradigms), rule adjudication, and immersive DM persona (Minthara Baenre). Bundles dnd-dm, dnd-campaign-manager, and dnd-module-gen skills."
+description: "Autonomous D&D 5e AI Dungeon Master — campaign lifecycle management with delta recaps and campaign-scoped long-term memory, module generation (5 types × 25 paradigms), rule adjudication, and immersive DM persona (Minthara Baenre). Bundles dnd-dm, dnd-campaign-manager, and dnd-module-gen skills."
 version: 1.0.0
 tags:
   - dnd
@@ -20,7 +20,7 @@ Saga = epic campaign / Smith = autonomous creator. A cross-platform D&D DM skill
 | Skill | Slug | Role |
 |-------|------|------|
 | **dnd-dm** | `sagasmith-dm` | Core DM persona, rule adjudication, dice engine, combat, SRD retrieval |
-| **dnd-campaign-manager** | `sagasmith-campaign` | Campaign lifecycle, database snapshots, save/load/undo, USER.md sync |
+| **dnd-campaign-manager** | `sagasmith-campaign` | Campaign lifecycle, snapshot recap, campaign memory, save/load/undo, USER.md player mapping |
 | **dnd-module-gen** | `sagasmith-modulegen` | Adventure module generation: one-shot / short / medium / long / sandbox × 25 paradigms |
 
 ## DM Persona

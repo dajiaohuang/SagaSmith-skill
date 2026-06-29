@@ -177,7 +177,6 @@ class CampaignService:
                             )
                         )
             return self._info(session, campaign, save_count=0)
-
     def list(self, *, status: str | None = None) -> list[CampaignInfo]:
         with self.database.transaction() as session:
             statement = select(Campaign).order_by(Campaign.created_at, Campaign.id)
@@ -236,8 +235,8 @@ class CampaignService:
         Returns the CampaignInfo for the newly created campaign.
         Raises CampaignAlreadyExistsError if *campaign_id* is taken.
         """
-        from .module_content import ModuleImportService
-        from .snapshots import CampaignSnapshotService
+        from . import ModuleImportService
+        from . import CampaignSnapshotService
 
         campaign_id = campaign_id or f"campaign_{uuid.uuid4().hex[:16]}"
         with self.database.transaction() as session:
@@ -283,9 +282,16 @@ class CampaignService:
                     summary="",
                 )
             )
-            rule_set = session.get(RuleSet, rule_set_id or _DEFAULT_RULE_SET_ID) or session.scalar(
-                select(RuleSet).order_by(RuleSet.created_at)
-            )
+            # Resolve the rule set: caller-specified → default → most recent.
+            rule_set = None
+            if rule_set_id:
+                rule_set = session.get(RuleSet, rule_set_id)
+                if rule_set is None:
+                    raise ValueError(f"rule set not found: {rule_set_id}")
+            else:
+                rule_set = session.get(RuleSet, _DEFAULT_RULE_SET_ID) or session.scalar(
+                    select(RuleSet).order_by(RuleSet.created_at)
+                )
             if rule_set is not None:
                 profile_id = f"profile_{uuid.uuid4().hex[:16]}"
                 session.add(

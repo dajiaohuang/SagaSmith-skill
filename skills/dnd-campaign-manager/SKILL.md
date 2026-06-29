@@ -237,37 +237,77 @@ use `action=index` to select the first unlocked scene, expand it, then persist e
 
 Never call `set_scene` for a locked chapter or merely planned player movement.
 
-## Save a complete snapshot
+## Save a complete snapshot (with auto recap)
 
 Prefer the native `dnd_save` tool. Use a short label describing the decision point.
 Every save creates a new slot; never overwrite an earlier slot. Restore auto-saves
 current state before loading. Archived campaigns are rejected.
 
+Each `create` action now automatically:
+1. Compares current state against the previous save.
+2. Generates a narrative recap summarizing what changed (plot, characters, locations, events, future impact, player choices).
+3. Writes the recap into the snapshot for later review.
+4. Triggers long-term memory recording (P0=permanent, P1=candidate, P2=snapshot-only). Memories are stored in the `campaign_memories` database table — never in USER.md.
+
 ```
 dnd_save action=create campaign_id=<id> label="进入地城前"
 dnd_save action=list campaign_id=<id>
+dnd_save action=lineage campaign_id=<id>
 dnd_save action=verify campaign_id=<id> slot=1
 dnd_save action=restore campaign_id=<id> slot=1 [auto_save=true]
 dnd_save action=delete campaign_id=<id> slot=3
 dnd_save action=export campaign_id=<id> slot=1 output="save.json"
+dnd_save action=regenerate_recap campaign_id=<id> slot=12
 ```
 
-Before a save whose label or surrounding conversation claims that character creation is
-complete, check `dnd_character action=list campaign_id=<id>`. If an expected character is
-absent, stop and persist it via `dnd_character action=create` before saving. PC characters
-are bound to campaigns; NPCs live in the global library (`dnd_character action=list type=npc`).
-Never create a misleading empty save.
+The `create` response now contains:
+- `slot`, `chapter`, `location`, `snapshot_hash` — same as before.
+- `recap` — the generated recap dict with `summary`, `plot_progress`,
+  `new_characters`, `new_locations`, `triggered_events`, `future_impact`,
+  `player_choices`, `memory_candidates`, and `source`.
+- `memory_actions` — what narrative facts were written to `campaign_memories`.
+- `warnings` — any non-fatal issues (LLM degradation, memory trigger failure).
 
-The CLI below is the maintenance fallback:
+The recap is delta-based: it describes only what changed since the previous save.
+For the first save of a campaign (slot 1), the recap is a baseline "origin story"
+summary.
 
-```powershell
-python -m <domain-cli> save create `
-  --campaign <campaign-id> `
-  --label "进入地城前" `
-  --workspace "<workspace>"
+### Recap regeneration
+
+If a recap failed to generate or needs improvement:
+```
+dnd_save action=regenerate_recap campaign_id=<id> slot=<slot>
 ```
 
-Report the returned campaign ID, slot, label, chapter, location, and hash prefix.
+This re-reads the existing snapshot, compares against its predecessor, and
+re-runs the LLM recap generation, updating the snapshot in place.
+
+### Campaign memory
+
+Each save is a DAG node with `parent_save_id`. The mutable campaign runtime keeps
+an active save head. Restoring an older save moves that head; the next save becomes
+a new child branch instead of inheriting memories from a sibling branch.
+
+`campaign_memories` stores stable fact identities. Save-scoped values live in
+`campaign_memory_revisions`. The effective memory set for a slot is resolved from
+that slot and its ancestors, with the nearest revision winning for each fact.
+ChromaDB indexes revisions but is never the source of truth.
+
+For natural-language questions about campaign continuity, always use `dnd_memory`
+instead of relying on chat/session memory:
+
+```
+dnd_memory action=search campaign_id=<id> query="我们答应过哪些 NPC？"
+dnd_memory action=scope campaign_id=<id>
+dnd_memory action=get campaign_id=<id> [save_id=<save-id>]
+dnd_memory action=status
+dnd_memory action=reindex campaign_id=<id>
+```
+
+`scope.included_saves` is the exact root-to-current range used for semantic
+retrieval. Results from sibling branches must never be included. Campaign memory
+is separate from USER.md — USER.md only stores player-role name mappings
+(`dnd-campaign:<id>:players` block).
 
 ## List and verify saves
 
