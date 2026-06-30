@@ -1,4 +1,4 @@
-"""Incremental hierarchical rule ingestion with optional BGE-M3 embeddings."""
+"""Incremental hierarchical rule ingestion with configurable BGE embeddings."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, func, select, text
 
@@ -23,6 +24,7 @@ from ..db.models import (
     RuleSet,
     RuleSource,
 )
+from ..vector.client import VectorStore
 from .embedding import BgeM3Embedder, Embedder
 from .parser import ParsedSection, parse_markdown
 
@@ -61,6 +63,29 @@ def _embedding_text(
     )
 
 
+def _ensure_embedding_model(session, embedder: Embedder) -> EmbeddingModel:
+    model_id = getattr(
+        embedder,
+        "model_id",
+        f"embedding-{hashlib.sha256(embedder.model_name.encode()).hexdigest()[:16]}",
+    )
+    model_row = session.get(EmbeddingModel, model_id)
+    if model_row is None:
+        model_row = EmbeddingModel(
+            id=model_id,
+            provider="sentence-transformers",
+            model_name=embedder.model_name,
+            dimensions=embedder.dimensions,
+        )
+        session.add(model_row)
+    elif (
+        model_row.model_name != embedder.model_name
+        or model_row.dimensions != embedder.dimensions
+    ):
+        raise ValueError("embedding model metadata does not match the selected profile")
+    return model_row
+
+
 def _entry_type(section: ParsedSection) -> str | None:
     path = " / ".join(section.heading_path).casefold()
     if "spell descriptions" in path and section.depth >= 3:
@@ -92,7 +117,11 @@ class RuleIngestService:
         files = sorted(root.glob("DND5eSRD_*.md"))
         if not files:
             raise FileNotFoundError(f"no SRD markdown files found in {root}")
-        embedder = self.embedder or (BgeM3Embedder(show_progress=True) if embed else None)
+        embedder = self.embedder or (
+            BgeM3Embedder(language="en", show_progress=True) if embed else None
+        )
+        chroma_enabled = VectorStore().enabled
+        chroma_batches: list[dict[str, Any]] = []
 
         indexed = skipped = section_count = chunk_count = embedding_count = 0
         with self.database.transaction() as session:
@@ -123,20 +152,7 @@ class RuleIngestService:
                 session.flush()
             model_row = None
             if embedder is not None:
-                model_row = session.get(EmbeddingModel, DEFAULT_EMBEDDING_MODEL_ID)
-                if model_row is None:
-                    model_row = EmbeddingModel(
-                        id=DEFAULT_EMBEDDING_MODEL_ID,
-                        provider="sentence-transformers",
-                        model_name=embedder.model_name,
-                        dimensions=embedder.dimensions,
-                    )
-                    session.add(model_row)
-                elif (
-                    model_row.model_name != embedder.model_name
-                    or model_row.dimensions != embedder.dimensions
-                ):
-                    raise ValueError("active embedding model metadata does not match the embedder")
+                model_row = _ensure_embedding_model(session, embedder)
             session.flush()
 
             for file_path in files:
@@ -164,7 +180,26 @@ class RuleIngestService:
                         )
                         or 0
                     )
-                    if chunks_total and (embedder is None or embeddings_total == chunks_total):
+                    compatible_total = int(
+                        session.scalar(
+                            select(func.count()).select_from(RuleChunk).where(
+                                RuleChunk.source_id == source.id,
+                                (
+                                    RuleChunk.embedding_model_id == model_row.id
+                                    if model_row is not None
+                                    else RuleChunk.embedding_model_id.is_(None)
+                                ),
+                            )
+                        )
+                        or 0
+                    )
+                    if chunks_total and (
+                        embedder is None
+                        or (
+                            embeddings_total == chunks_total
+                            and compatible_total == chunks_total
+                        )
+                    ):
                         skipped += 1
                         continue
                 if source is None:
@@ -277,6 +312,7 @@ class RuleIngestService:
                 ]
                 vectors = embedder.encode(texts) if embedder is not None else [None] * len(texts)
                 rows: list[RuleChunk] = []
+                chroma_rows: list[tuple[str, dict[str, Any]]] = []
                 for chunk, embedding_text, vector in zip(
                     parsed_chunks, texts, vectors, strict=True
                 ):
@@ -303,7 +339,31 @@ class RuleIngestService:
                     )
                     session.add(row)
                     rows.append(row)
+                    if chroma_enabled and vector is not None:
+                        chroma_rows.append(
+                            (
+                                chunk_id,
+                                {
+                                    "chunk_id": chunk_id,
+                                    "rule_set_id": rule_set.id,
+                                    "publication_id": publication.id,
+                                    "source_id": source.id,
+                                    "section_id": section_ids[chunk.section_key],
+                                    "chunk_index": chunk.chunk_index,
+                                    "chunk_type": "section",
+                                    "content_hash": _checksum(chunk.text),
+                                    "version": 1,
+                                },
+                            )
+                        )
                 session.flush()
+                if chroma_rows:
+                    chroma_batches.append(
+                        {
+                            "vectors": [row.embedding_json for row in rows],
+                            "rows": chroma_rows,
+                        }
+                    )
                 if rows and session.bind is not None and session.bind.dialect.name == "postgresql":
                     session.execute(
                         text(
@@ -330,6 +390,15 @@ class RuleIngestService:
                 chunk_count += len(rows)
                 embedding_count += sum(row.embedding_json is not None for row in rows)
 
+        if chroma_enabled and chroma_batches and embedder is not None:
+            collection = VectorStore().collection_for("dnd_rules", embedder.profile)
+            for batch in chroma_batches:
+                collection.upsert(
+                    ids=[row[0] for row in batch["rows"]],
+                    embeddings=batch["vectors"],
+                    metadatas=[row[1] for row in batch["rows"]],
+                )
+
         return IngestResult(
             rule_set_id=DEFAULT_RULE_SET_ID,
             publication_id=DEFAULT_PUBLICATION_ID,
@@ -346,6 +415,7 @@ class RuleIngestService:
         *,
         rule_set_id: str = ZH_CN_RULE_SET_ID,
         publication_id: str = ZH_CN_PUBLICATION_ID,
+        locale: str = "zh-CN",
         embed: bool = True,
         force: bool = False,
     ) -> IngestResult:
@@ -363,7 +433,11 @@ class RuleIngestService:
         ]
         if not files:
             raise FileNotFoundError(f"no SRD markdown files found under {root}")
-        embedder = self.embedder or (BgeM3Embedder(show_progress=True) if embed else None)
+        embedder = self.embedder or (
+            BgeM3Embedder(language=locale, show_progress=True) if embed else None
+        )
+        chroma_enabled = VectorStore().enabled
+        chroma_batches: list[dict[str, Any]] = []
 
         indexed = skipped = section_count = chunk_count = embedding_count = 0
         with self.database.transaction() as session:
@@ -374,7 +448,7 @@ class RuleIngestService:
                     game_system="D&D 5e",
                     edition="2014",
                     release="SRD 5.1",
-                    locale="zh-CN",
+                    locale=locale,
                     metadata_json={"license": "CC-BY-4.0", "source": "SagiriWWW/DND.SRD.zh-CN"},
                 )
                 session.add(rule_set)
@@ -394,15 +468,7 @@ class RuleIngestService:
                 session.flush()
             model_row = None
             if embedder is not None:
-                model_row = session.get(EmbeddingModel, DEFAULT_EMBEDDING_MODEL_ID)
-                if model_row is None:
-                    model_row = EmbeddingModel(
-                        id=DEFAULT_EMBEDDING_MODEL_ID,
-                        provider="sentence-transformers",
-                        model_name=embedder.model_name,
-                        dimensions=embedder.dimensions,
-                    )
-                    session.add(model_row)
+                model_row = _ensure_embedding_model(session, embedder)
 
             for file_path in files:
                 rel = file_path.relative_to(root)
@@ -418,7 +484,12 @@ class RuleIngestService:
                 if source is not None and source.checksum == checksum and not force:
                     chunks_exist = session.scalar(
                         select(func.count()).select_from(RuleChunk).where(
-                            RuleChunk.source_id == source.id
+                            RuleChunk.source_id == source.id,
+                            (
+                                RuleChunk.embedding_model_id == model_row.id
+                                if model_row is not None
+                                else RuleChunk.embedding_model_id.is_(None)
+                            ),
                         )
                     ) or 0
                     if chunks_exist:
@@ -434,7 +505,7 @@ class RuleIngestService:
                         source_path=source_key,
                         source_type="markdown",
                         system_version="D&D 5e 2014 / SRD 5.1",
-                        locale="zh-CN",
+                        locale=locale,
                         checksum=checksum,
                         metadata_json={
                             "filename": file_path.name,
@@ -502,6 +573,7 @@ class RuleIngestService:
                     for chunk in parsed_chunks
                 ]
                 vectors = embedder.encode(texts) if embedder is not None else [None] * len(texts)
+                chroma_rows: list[tuple[str, dict[str, Any]]] = []
                 for chunk, embedding_text, vector in zip(
                     parsed_chunks, texts, vectors, strict=True
                 ):
@@ -525,16 +597,44 @@ class RuleIngestService:
                             chunk_text=chunk.text,
                             search_text=f"{breadcrumb}\n{chunk.text}",
                             embedding_json=vector,
-                            metadata_json={"_source": "zh-CN"},
+                            metadata_json={"_source": locale},
                         )
                     )
+                    if chroma_enabled and vector is not None:
+                        chroma_rows.append(
+                            (
+                                chunk_id,
+                                {
+                                    "chunk_id": chunk_id,
+                                    "rule_set_id": rule_set.id,
+                                    "publication_id": publication.id,
+                                    "source_id": source.id,
+                                    "section_id": section_ids[chunk.section_key],
+                                    "chunk_index": chunk.chunk_index,
+                                    "chunk_type": "section",
+                                    "content_hash": _checksum(chunk.text),
+                                    "version": 1,
+                                },
+                            )
+                        )
                     session.flush()
+                if chroma_rows:
+                    chroma_batches.append({"vectors": vectors, "rows": chroma_rows})
 
                 indexed += 1
                 section_count += len(parsed_sections)
                 chunk_count += len(parsed_chunks)
                 embedding_count += sum(
                     1 for _ in parsed_chunks if embedder is not None
+                )
+
+        if chroma_enabled and chroma_batches and embedder is not None:
+            collection = VectorStore().collection_for("dnd_rules", embedder.profile)
+            for batch in chroma_batches:
+                collection.upsert(
+                    ids=[row[0] for row in batch["rows"]],
+                    embeddings=batch["vectors"],
+                    metadatas=[row[1] for row in batch["rows"]],
                 )
 
         return IngestResult(
@@ -620,7 +720,10 @@ def ensure_bundled_rules_ingested(database: Database) -> dict[str, IngestResult]
     if srd_dir is None:
         return {}  # No bundled SRD found, skip silently
 
-    # Check if already ingested
+    chroma_enabled = VectorStore().enabled
+    dense_requested = os.environ.get("DND_DENSE_DISABLED", "1") == "0"
+
+    # Check whether text and the selected embedding profile are already present.
     with database.transaction() as session:
         rule_set = session.get(RuleSet, DEFAULT_RULE_SET_ID)
         if rule_set is not None:
@@ -632,13 +735,26 @@ def ensure_bundled_rules_ingested(database: Database) -> dict[str, IngestResult]
                 .where(RuleSource.rule_set_id == DEFAULT_RULE_SET_ID)
             )
             if chunk_count and chunk_count > 0:
-                return {}  # Already ingested
+                if not (chroma_enabled and dense_requested):
+                    return {}
+                desired = BgeM3Embedder(language=rule_set.locale)
+                matching = session.scalar(
+                    select(_func.count())
+                    .select_from(RuleChunk)
+                    .join(RuleSource, RuleSource.id == RuleChunk.source_id)
+                    .where(
+                        RuleSource.rule_set_id == DEFAULT_RULE_SET_ID,
+                        RuleChunk.embedding_model_id == desired.model_id,
+                    )
+                )
+                if matching == chunk_count:
+                    return {}
 
     # Default: lexical-only ingestion (no dense).  Set CHROMA_DB_DISABLED=0 and
     # DND_DENSE_DISABLED=0 to generate embeddings into ChromaDB for dense search.
     #   unset / =1 → embed=False (lexical only, zero dependency)
     #   =0         → embed=True  (ChromaDB-backed dense search)
-    embed = bool(os.environ.get("DND_DENSE_DISABLED", "1") == "0")
+    embed = dense_requested
     service = RuleIngestService(database)
     result = service.ingest_srd(srd_dir, embed=embed, force=False)
     return {DEFAULT_RULE_SET_ID: result}

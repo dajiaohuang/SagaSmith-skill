@@ -5,8 +5,7 @@ Two-tier retrieval stack:
   2. Lexical keyword overlap     (no embedding model needed, always available)
 
 Set ``DND_DENSE_DISABLED=1`` to skip dense retrieval entirely and always use
-lexical search.  Useful on machines without a GPU where BGE-M3 encoding is
-too slow.
+lexical search. Useful when dense retrieval is not wanted.
 
 ChromaDB is disabled when neither ``CHROMA_DB_URL`` nor ``CHROMA_DB_PATH`` is
 set.  In that case all searches fall back to lexical automatically — no
@@ -24,7 +23,15 @@ from sqlalchemy import select
 from .db.database import Database
 from .db.memory import CampaignMemoryService
 from .db.models.runtime import CampaignMemory, CampaignMemoryRevision
-from .rules.embedding import BgeM3Embedder
+from .rules.embedding import (
+    BGE_M3_PROFILE,
+    BgeM3Embedder,
+    EmbeddingProfile,
+    collection_name,
+    configured_profiles,
+    detect_text_language,
+    profile_for_language,
+)
 from .vector.client import VectorStore
 
 COLLECTION_NAME = "dnd_campaign_memories"
@@ -125,11 +132,15 @@ class CampaignMemorySearchService:
         if not self.vector_store.enabled or not dense_enabled():
             return 0
         if campaign_id:
-            self.vector_store.collection(COLLECTION_NAME).delete(
-                where={"campaign_id": campaign_id}
-            )
+            for profile in self._profiles():
+                self._collection(profile).delete(where={"campaign_id": campaign_id})
         else:
-            self.vector_store.drop_collection(COLLECTION_NAME)
+            for profile in self._profiles():
+                self.vector_store.drop_collection(
+                    collection_name(COLLECTION_NAME, profile)
+                    if self.embedder is None
+                    else COLLECTION_NAME
+                )
         with self.database.transaction() as session:
             statement = (
                 select(CampaignMemoryRevision, CampaignMemory)
@@ -150,24 +161,42 @@ class CampaignMemorySearchService:
     def index_rows(self, rows: list[dict[str, Any]]) -> int:
         if not rows or not self.vector_store.enabled or not dense_enabled():
             return 0
-        texts = [_embedding_text(row) for row in rows]
-        vectors = self._embedder().encode(texts)
-        collection = self.vector_store.collection(COLLECTION_NAME)
-        collection.upsert(
-            ids=[str(row["revision_id"]) for row in rows],
-            embeddings=vectors,
-            documents=texts,
-            metadatas=[_metadata(row) for row in rows],
-        )
+        grouped: dict[EmbeddingProfile, list[dict[str, Any]]] = {}
+        if self.embedder is not None:
+            grouped[self._profiles()[0]] = rows
+        else:
+            for row in rows:
+                text = _embedding_text(row)
+                profile = profile_for_language(detect_text_language(text))
+                grouped.setdefault(profile, []).append(row)
+        for profile, profile_rows in grouped.items():
+            texts = [_embedding_text(row) for row in profile_rows]
+            embedder = self.embedder or BgeM3Embedder(profile=profile)
+            vectors = embedder.encode(texts)
+            self._collection(profile).upsert(
+                ids=[str(row["revision_id"]) for row in profile_rows],
+                embeddings=vectors,
+                documents=texts,
+                metadatas=[_metadata(row) for row in profile_rows],
+            )
         return len(rows)
 
     def status(self) -> dict[str, Any]:
         return {
             "dense_disabled": not dense_enabled(),
             "chroma_enabled": self.vector_store.enabled,
-            "collection": self.vector_store.collection_stats(COLLECTION_NAME)
-            if self.vector_store.enabled
-            else None,
+            "collections": (
+                [
+                    self.vector_store.collection_stats(
+                        collection_name(COLLECTION_NAME, profile)
+                        if self.embedder is None
+                        else COLLECTION_NAME
+                    )
+                    for profile in self._profiles()
+                ]
+                if self.vector_store.enabled
+                else []
+            ),
         }
 
     def _dense_scores(
@@ -177,8 +206,14 @@ class CampaignMemorySearchService:
         *,
         top_k: int,
     ) -> list[tuple[float, dict[str, Any]]]:
-        query_vector = self._embedder().encode([query])[0]
-        collection = self.vector_store.collection(COLLECTION_NAME)
+        profile = (
+            self._profiles()[0]
+            if self.embedder is not None
+            else profile_for_language(detect_text_language(query))
+        )
+        embedder = self.embedder or BgeM3Embedder(profile=profile)
+        query_vector = embedder.encode([query])[0]
+        collection = self._collection(profile)
         try:
             result = collection.query(
                 query_embeddings=[query_vector],
@@ -230,10 +265,15 @@ class CampaignMemorySearchService:
         )
         return scored
 
-    def _embedder(self) -> Embedder:
+    def _profiles(self) -> tuple[EmbeddingProfile, ...]:
+        if self.embedder is not None:
+            return (getattr(self.embedder, "profile", BGE_M3_PROFILE),)
+        return configured_profiles()
+
+    def _collection(self, profile: EmbeddingProfile):
         if self.embedder is None:
-            self.embedder = BgeM3Embedder()
-        return self.embedder
+            return self.vector_store.collection_for(COLLECTION_NAME, profile)
+        return self.vector_store.collection(COLLECTION_NAME)
 
 
 def _joined_revision_row(

@@ -105,10 +105,10 @@ python -m <domain-cli> character list --type npc
 
 1. **精确名称匹配** — `CompendiumEntry` 和 `RuleSection.title` 大小写折叠匹配。
 2. **全文检索** — SQLite FTS5（BM25）或 PostgreSQL `tsvector`。
-3. **Dense 向量检索** — BGE-M3（1024 维），优先走 ChromaDB HNSW 索引，未配置时回退
-   PostgreSQL pgvector 或内存 numpy 余弦相似度。
+3. **Dense 向量检索** — 使用配置中选定的 BGE profile；M3、中文 Small、英文 Small
+   使用彼此隔离的 ChromaDB HNSW collection，未配置 ChromaDB 时退化为词法检索。
 
-优先调用常驻的 `dnd_rules` 工具，避免每次查询重新载入 BGE-M3：
+优先调用常驻的 `dnd_rules` 工具，避免每次查询重新载入 embedding 模型：
 
 - `action=search`：传入 `campaign_id`、`query`、`top_k`。结果按 RRF 加权融合排序。
 - `action=expand`：传入搜索结果的 `chunk_id` 和 `expand_mode=section`。
@@ -124,7 +124,8 @@ python -m <domain-cli> vector status
 
 ## 模组 Dense 检索
 
-模组入库时使用 BGE-M3 对 `module_chunks` 建立 Dense 索引，与 SRD 规则块隔离。
+模组入库时使用配置中选定的 BGE profile 对 `module_chunks` 建立 Dense 索引，
+不同模型和 SRD 规则块均使用隔离的 collection。
 检索流程：
 
 1. `action=search` — 传入当前 `campaign_id` 和 `query`，执行词法+Dense 混合检索。

@@ -10,9 +10,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from chromadb import Collection, HttpClient, PersistentClient
 from chromadb.config import Settings
+
+if TYPE_CHECKING:
+    from ..rules.embedding import EmbeddingProfile
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +104,9 @@ class VectorStore:
 
     def collection(self, name: str) -> Collection:
         """Return a ChromaDB collection, creating it on first access."""
-        if name not in _COLLECTION_NAMES:
+        if name not in _COLLECTION_NAMES and not any(
+            name.startswith(f"{base}__") for base in _COLLECTION_NAMES
+        ):
             raise ValueError(
                 f"unknown ChromaDB collection {name!r}; expected one of {_COLLECTION_NAMES}"
             )
@@ -110,6 +116,39 @@ class VectorStore:
                 name=name,
                 metadata=_COLLECTION_METADATA,
             )
+        return self._collections[name]
+
+    def collection_for(self, base_name: str, profile: EmbeddingProfile) -> Collection:
+        """Return a model-isolated collection and validate its manifest."""
+        from ..rules.embedding import collection_name
+
+        name = collection_name(base_name, profile)
+        if name not in self._collections:
+            expected = {
+                **_COLLECTION_METADATA,
+                "embedding_model": profile.model_name,
+                "embedding_dimensions": profile.dimensions,
+                "embedding_language": profile.language,
+                "embedding_index_version": 1,
+            }
+            collection = self._ensure_client().get_or_create_collection(
+                name=name,
+                metadata=expected,
+            )
+            metadata = collection.metadata or {}
+            for key in (
+                "embedding_model",
+                "embedding_dimensions",
+                "embedding_language",
+                "embedding_index_version",
+            ):
+                if metadata.get(key) != expected[key]:
+                    raise RuntimeError(
+                        f"ChromaDB collection {name!r} has an incompatible embedding "
+                        f"manifest ({key}={metadata.get(key)!r}, expected {expected[key]!r}); "
+                        "rebuild the collection before querying it"
+                    )
+            self._collections[name] = collection
         return self._collections[name]
 
     def collection_stats(self, name: str) -> dict:

@@ -1,4 +1,4 @@
-"""Campaign-scoped exact and full-text rule retrieval.
+"""Campaign-scoped exact, full-text, and profile-aware BGE rule retrieval.
 
 Dense vector search requires ChromaDB (set ``CHROMA_DB_DISABLED=0`` to enable).
 Without ChromaDB, search falls back to lexical-only mode automatically.
@@ -18,6 +18,7 @@ from ..db.models import (
     CampaignRuleProfile,
     CampaignRulePublication,
     CompendiumEntry,
+    EmbeddingModel,
     RuleChunk,
     RulePublication,
     RuleSection,
@@ -26,7 +27,12 @@ from ..db.models import (
 )
 from ..vector.client import VectorStore
 from ..vector.search import chroma_dense_search
-from .embedding import BgeM3Embedder, Embedder
+from .embedding import (
+    BgeM3Embedder,
+    Embedder,
+    detect_text_language,
+    profile_for_model,
+)
 from .ingest import DEFAULT_RULE_SET_ID
 
 #   unset / =1 → dense disabled (lexical only)
@@ -136,11 +142,23 @@ class RuleSearchService:
             )
             dense_ranked: list[str] = []
             if dense and not _DENSE_DISABLED:
-                embedder = self.embedder or BgeM3Embedder()
-                query_vector = embedder.encode([retrieval_query])[0]
-                dense_ranked = self._dense_ids(
-                    session, query_vector, scope, limit=max(top_k * 10, 50)
-                )
+                dense_fusion: dict[str, float] = {}
+                for embedder in self._embedders_for_scope(
+                    session, scope, retrieval_query
+                ):
+                    query_vector = embedder.encode([retrieval_query])[0]
+                    ranked = self._dense_ids(
+                        session,
+                        query_vector,
+                        scope,
+                        embedder=embedder,
+                        limit=max(top_k * 10, 50),
+                    )
+                    for rank, chunk_id in enumerate(ranked, start=1):
+                        dense_fusion[chunk_id] = dense_fusion.get(chunk_id, 0.0) + 1 / (
+                            60 + rank
+                        )
+                dense_ranked = sorted(dense_fusion, key=dense_fusion.get, reverse=True)
 
             scores: dict[str, float] = {}
             channels: dict[str, set[str]] = {}
@@ -396,7 +414,13 @@ class RuleSearchService:
         )
 
     def _dense_ids(
-        self, session, query_vector: list[float], scope: SearchScope, *, limit: int
+        self,
+        session,
+        query_vector: list[float],
+        scope: SearchScope,
+        *,
+        embedder: Embedder,
+        limit: int,
     ) -> list[str]:
         """Return ChromaDB-backed dense IDs or an empty list when ChromaDB is unavailable."""
         if not VectorStore().enabled:
@@ -405,9 +429,53 @@ class RuleSearchService:
         if scope.publication_ids:
             where["publication_id"] = {"$in": list(scope.publication_ids)}
         results = chroma_dense_search(
-            "dnd_rules", query_vector, where, limit=limit
+            "dnd_rules",
+            query_vector,
+            where,
+            profile=embedder.profile,
+            limit=limit,
         )
         return [chunk_id for chunk_id, _ in results]
+
+    def _embedders_for_scope(
+        self,
+        session,
+        scope: SearchScope,
+        query: str,
+    ) -> list[Embedder]:
+        rows = list(
+            session.scalars(
+                select(EmbeddingModel)
+                .join(RuleChunk, RuleChunk.embedding_model_id == EmbeddingModel.id)
+                .join(RuleSource, RuleSource.id == RuleChunk.source_id)
+                .where(*self._scope_condition(scope))
+                .distinct()
+            )
+        )
+        if self.embedder is not None:
+            if rows and any(
+                row.model_name != self.embedder.model_name
+                or row.dimensions != self.embedder.dimensions
+                for row in rows
+            ):
+                raise RuleSearchError(
+                    "query embedder does not match the model used to build this rule index"
+                )
+            return [self.embedder]
+        if not rows:
+            return [BgeM3Embedder(language=detect_text_language(query))]
+
+        query_language = detect_text_language(query)
+        selected = rows
+        if len(rows) > 1 and query_language != "mixed":
+            matching = [
+                row
+                for row in rows
+                if profile_for_model(row.model_name).language in {query_language, "multi"}
+            ]
+            if matching:
+                selected = matching
+        return [BgeM3Embedder(model_name=row.model_name) for row in selected]
 
     def _materialize(
         self,

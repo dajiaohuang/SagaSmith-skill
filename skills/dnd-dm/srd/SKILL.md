@@ -22,11 +22,11 @@
 搜索时（默认，零依赖）
 ├─ 精确匹配 (exact)                ← 关键词完全匹配，权重最高
 ├─ 词法检索 (lexical)             ← 分词 + 二元字格匹配
-└─ 密集向量 (dense) — 可选         ← 需要 ChromaDB + BGE-M3
+└─ 密集向量 (dense) — 可选         ← 需要 ChromaDB + 配置的 BGE profile
 
 Dense 向量搜索（可选，需配置）
 └─ set CHROMA_DB_DISABLED=0       ← 启用 ChromaDB（默认路径 <skill>/data/chroma_db）
-└─ set DND_DENSE_DISABLED=0       ← 启用 BGE-M3 编码（无独显机器较慢）
+└─ set DND_DENSE_DISABLED=0       ← 启用配置的 BGE profile
 ```
 
 ## 环境变量
@@ -36,7 +36,10 @@ Dense 向量搜索（可选，需配置）
 | `CHROMA_DB_DISABLED` | 禁用 (默认不设) | 设为 `0` 强制启用（使用 `<skill>/data/chroma_db/`） |
 | `CHROMA_DB_URL` | - | 远程 ChromaDB 服务地址（设置后自动启用） |
 | `CHROMA_DB_PATH` | - | 自定义 ChromaDB 路径（设置后自动启用） |
-| `DND_DENSE_DISABLED` | 禁用 (默认 `=1`) | 设为 `0` 启用 BGE-M3 密集向量（无独显时较慢） |
+| `DND_DENSE_DISABLED` | 禁用 (默认 `=1`) | 设为 `0` 启用 Dense 检索 |
+| `DND_EMBEDDING_MODE` | `auto` | 设备模式：`auto`、`cpu` 或 `gpu`；不决定模型 |
+| `DND_EMBEDDING_PROFILES` | `bge_m3` | 可选 `bge_m3`、`bge_small_zh_v1_5`、`bge_small_en_v1_5`，逗号分隔 |
+| `DND_EMBEDDING_BATCH_SIZE` | `8` | 编码批次大小（1–128） |
 | `DND_DATABASE_URL` | `<skill>/data/dnd.db` | SQLite 数据库路径（覆盖默认） |
 
 ## CLI 命令
@@ -66,14 +69,21 @@ python -m saga_domain.cli rules search --query "施法" --campaign <id> --no-den
 # 零依赖，纯词法搜索（首次启用后立即可用）
 # 无需配置任何环境变量
 
-# 有 ChromaDB 但无 GPU：embed 仍会生成到 SQLite NumPy fallback（查询时慢）
+# 无 GPU：显式选择中英文 Small profile
 set CHROMA_DB_DISABLED=0
-# 注意：首次 ingest-srd 仍需 BGE-M3 编码一次
+set DND_DENSE_DISABLED=0
+set DND_EMBEDDING_MODE=cpu
+set DND_EMBEDDING_PROFILES=bge_small_zh_v1_5,bge_small_en_v1_5
 
 # 有 GPU + ChromaDB：完整密集向量体验
 set CHROMA_DB_DISABLED=0
 set DND_DENSE_DISABLED=0
+set DND_EMBEDDING_PROFILES=bge_m3
 ```
+
+模型选择是显式且可选的，不由 CPU/GPU 自动强制切换。中英文 Small 分别为 512/384
+维；BGE-M3 为 1024 维。每个 profile 使用独立 collection。修改 profile 后运行
+`python -m saga_domain.cli vector reindex` 重建 Dense 索引。
 
 ## 2024 SRD 来源文件映射
 

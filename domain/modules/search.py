@@ -1,8 +1,4 @@
-"""Campaign-scoped lexical and BGE-M3 dense module retrieval.
-
-Set ``DND_DENSE_DISABLED=1`` to skip dense retrieval entirely.  Useful on
-machines without a GPU where BGE-M3 encoding is too slow.
-"""
+"""Campaign-scoped lexical and profile-aware BGE module retrieval."""
 
 from __future__ import annotations
 
@@ -14,7 +10,13 @@ from typing import Any
 from sqlalchemy import func, or_, select
 
 from ..db.database import Database
-from ..db.models import ModuleChapter, ModuleChunk, ModuleSource, SceneIndex
+from ..db.models import (
+    EmbeddingModel,
+    ModuleChapter,
+    ModuleChunk,
+    ModuleSource,
+    SceneIndex,
+)
 from ..rules.embedding import BgeM3Embedder, Embedder
 from ..vector.client import VectorStore
 from ..vector.search import chroma_dense_search
@@ -82,10 +84,15 @@ class ModuleSearchService:
             dense_ids: list[str] = []
             dense_scores: dict[str, float] = {}
             if dense and not _DENSE_DISABLED:
-                embedder = self.embedder or BgeM3Embedder()
+                embedder = self._embedder_for_chunks(session, allowed)
                 vector = embedder.encode([query])[0]
                 dense_ids, dense_scores = self._dense_ids(
-                    session, vector, campaign_id, allowed, limit=max(top_k * 10, 50)
+                    session,
+                    vector,
+                    campaign_id,
+                    allowed,
+                    embedder=embedder,
+                    limit=max(top_k * 10, 50),
                 )
 
             scores: dict[str, float] = {}
@@ -167,6 +174,7 @@ class ModuleSearchService:
         campaign_id: str,
         allowed: list[str],
         *,
+        embedder: Embedder,
         limit: int,
     ) -> tuple[list[str], dict[str, float]]:
         """Return ChromaDB-backed dense IDs or empty when ChromaDB is unavailable."""
@@ -176,6 +184,7 @@ class ModuleSearchService:
             "dnd_modules",
             query_vector,
             {"campaign_id": campaign_id},
+            profile=embedder.profile,
             limit=limit,
         )
         # Post-filter: only return chunks that also exist in the
@@ -189,6 +198,32 @@ class ModuleSearchService:
         ordered = [cid for cid, _ in filtered]
         scores = {cid: score for cid, score in filtered}
         return ordered, scores
+
+    def _embedder_for_chunks(self, session, allowed: list[str]) -> Embedder:
+        rows = list(
+            session.scalars(
+                select(EmbeddingModel)
+                .join(ModuleChunk, ModuleChunk.embedding_model_id == EmbeddingModel.id)
+                .where(ModuleChunk.id.in_(allowed))
+                .distinct()
+            )
+        )
+        if len(rows) > 1:
+            raise ModuleSearchError(
+                "active module contains multiple embedding models; rebuild it with one profile"
+            )
+        if self.embedder is not None:
+            if rows and (
+                rows[0].model_name != self.embedder.model_name
+                or rows[0].dimensions != self.embedder.dimensions
+            ):
+                raise ModuleSearchError(
+                    "query embedder does not match the model used to build this module index"
+                )
+            return self.embedder
+        if rows:
+            return BgeM3Embedder(model_name=rows[0].model_name)
+        return BgeM3Embedder()
 
     @staticmethod
     def _materialize(

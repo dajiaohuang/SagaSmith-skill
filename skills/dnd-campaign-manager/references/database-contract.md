@@ -39,11 +39,13 @@ and low-priority facts remain only in the snapshot recap.
 
 ## Vector storage
 
-Dense embedding vectors (BGE-M3, 1024-dim) for rule and module chunks are stored
+Dense embedding vectors use the configured BGE profile: BGE-M3 (1024-dim),
+BGE Small Chinese (512-dim), or BGE Small English (384-dim). They are stored
 **outside snapshot boundaries**:
 
 - **ChromaDB** (when `CHROMA_DB_URL` or `CHROMA_DB_PATH` is set): vectors live in
-  the `dnd_rules` and `dnd_modules` ChromaDB collections with HNSW indexing.
+  model-isolated `dnd_rules__<profile>` and `dnd_modules__<profile>` collections
+  with a validated model/dimension manifest and HNSW indexing.
   Snapshots never read or write ChromaDB — vectors are regenerated from SQL chunk
   content on re-ingest or via `vector reindex`.
 - **Fallback** (no ChromaDB configured): vectors are stored in the
@@ -52,8 +54,8 @@ Dense embedding vectors (BGE-M3, 1024-dim) for rule and module chunks are stored
   restored by snapshots.
 
 In both paths, restoring a snapshot does not delete, replace, or invalidate
-vector data.  The `vector migrate` CLI command copies existing SQL embeddings
-into ChromaDB for users upgrading from the fallback path.
+vector data. After changing `DND_EMBEDDING_PROFILES`, run `vector reindex` so
+SQL model metadata and ChromaDB collections remain compatible.
 
 ## Isolation and identity
 

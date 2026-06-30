@@ -164,8 +164,9 @@ python -m nanobot.dnd.db.cli module import --campaign <campaign-id> `
 
 没有合法本地模组源时必须明确报告缺失，禁止根据模型记忆重建已出版模组。
 PDF 使用专用结构解析器；DOCX、PPTX、XLSX、HTML 等附件由 MarkItDown 转成 Markdown，
-再按章节、场景和检索块入库；每个检索块使用 BGE-M3 生成 Dense 向量。向量优先写入
-ChromaDB（若已配置 `CHROMA_DB_URL` 或 `CHROMA_DB_PATH`），未配置时回退到 SQL
+再按章节、场景和检索块入库；每个检索块使用配置中选定的 BGE profile 生成 Dense 向量。
+M3、中文 Small、英文 Small 写入彼此隔离的 ChromaDB collection（若已配置
+`CHROMA_DB_URL` 或 `CHROMA_DB_PATH`），未配置时回退到 SQL
 `embedding_json` 列。导入完成后嵌入向量异步写入 ChromaDB，不阻塞 SQL 事务。
 频道消息中的本地附件路径只有在玩家明确要求作为模组来源时才可导入。
 

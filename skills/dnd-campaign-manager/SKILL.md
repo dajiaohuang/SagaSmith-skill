@@ -212,7 +212,7 @@ python -m <domain-cli> module scene `
 ```
 
 For discovery, search the active module with the resident `dnd_module` tool (`action=search`),
-which combines lexical substring matching and BGE-M3 Dense retrieval (ChromaDB HNSW when
+which combines lexical substring matching and configured BGE Dense retrieval (ChromaDB HNSW when
 configured, falling back to in-memory numpy). Expand the selected chunk before relying on
 the complete scene. Use the CLI only for maintenance:
 

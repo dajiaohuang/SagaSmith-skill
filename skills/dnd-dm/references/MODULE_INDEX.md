@@ -16,7 +16,7 @@ python -m nanobot.dnd.db.cli module import --campaign <id> --path "<path>" --nam
 导入后自动：
 - 按章节拆分（`ModuleChapter`）
 - 建立场景索引（`SceneIndex`，含起止行号、子节、标签、房间标注）
-- 生成检索块和 BGE-M3 Dense 向量（`ModuleChunk`）
+- 使用配置中选定的 BGE profile 生成检索块和 Dense 向量（`ModuleChunk`）
 
 ---
 

@@ -42,12 +42,12 @@ Includes D&D 5e 2024 SRD 5.2.1 (CC-BY-4.0, 20 files). English and optional Chine
 Search (default, zero dependency)
 ├─ Exact match   ← keyword exact match, highest weight
 ├─ Lexical       ← tokenization + bigram matching
-└─ Dense vectors — optional  ← requires ChromaDB + BGE-M3
+└─ Dense vectors — optional  ← requires ChromaDB + a configured BGE profile
 
 First-time setup
 ├─ database.upgrade_schema()            ← automatic
 └─ ensure_bundled_rules_ingested()     ← auto-ingest SRD (text only)
-    └─ embed = False (default)        ← BGE-M3 not loaded
+    └─ embed = False (default)        ← no embedding model loaded
 ```
 
 ### Environment Variables
@@ -57,7 +57,10 @@ First-time setup
 | `CHROMA_DB_DISABLED` | disabled (unset) | Set to `0` to enable ChromaDB (uses `<skill>/data/chroma_db/`) |
 | `CHROMA_DB_URL` | - | Remote ChromaDB server address (auto-enables when set) |
 | `CHROMA_DB_PATH` | - | Custom ChromaDB path (auto-enables when set) |
-| `DND_DENSE_DISABLED` | disabled (`=1`) | Set to `0` to enable BGE-M3 dense vectors (slow on non-GPU) |
+| `DND_DENSE_DISABLED` | disabled (`=1`) | Set to `0` to enable dense vectors |
+| `DND_EMBEDDING_MODE` | `auto` | Device mode: `auto`, `cpu`, or `gpu`; does not select a model |
+| `DND_EMBEDDING_PROFILES` | `bge_m3` | Comma-separated profiles: `bge_m3`, `bge_small_zh_v1_5`, `bge_small_en_v1_5` |
+| `DND_EMBEDDING_BATCH_SIZE` | `8` | Encoding batch size (1–128) |
 | `DND_DATABASE_URL` | `<skill>/data/dnd.db` | SQLite database path (overrides default) |
 
 ### Recommended Configurations
@@ -66,13 +69,22 @@ First-time setup
 # Zero dependency, pure lexical search (ready immediately after first use)
 # No environment variables needed
 
-# With ChromaDB but no GPU: embeddings stored in SQLite for NumPy fallback
+# CPU-friendly Chinese + English indexes
 set CHROMA_DB_DISABLED=0
+set DND_DENSE_DISABLED=0
+set DND_EMBEDDING_MODE=cpu
+set DND_EMBEDDING_PROFILES=bge_small_zh_v1_5,bge_small_en_v1_5
 
 # Full dense vector experience with GPU + ChromaDB
 set CHROMA_DB_DISABLED=0
 set DND_DENSE_DISABLED=0
+set DND_EMBEDDING_PROFILES=bge_m3
 ```
+
+Profile choice is explicit and independent of device detection. BGE-M3 uses 1024
+dimensions, Chinese Small 512, and English Small 384. Each profile has an isolated
+ChromaDB collection. After changing profiles, run
+`python -m saga_domain.cli vector reindex`.
 
 ## Repository
 

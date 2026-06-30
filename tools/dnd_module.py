@@ -15,7 +15,7 @@ from domain.db.models import ModuleChunk, ModuleSource
 from domain.db.module_content import ModuleImportService
 from domain.db.module_progress import ModuleProgressService
 from domain.modules.search import ModuleSearchService
-from domain.rules.embedding import BgeM3Embedder
+from domain.rules.embedding import collection_name, configured_profiles
 from domain.vector.client import VectorStore
 
 
@@ -56,7 +56,8 @@ class DndModuleTool(Tool):
     name = "dnd_module"
     description = (
         "Import channel attachments or local documents as campaign modules, inspect their "
-        "indexes, search with lexical and BGE-M3 Dense retrieval, expand complete scenes, "
+        "indexes, search with lexical and configured BGE Dense retrieval, expand complete "
+        "scenes, "
         "and persist current scene progress. "
         "BEFORE importing, always call action=index to check if the module already exists. "
         "If already imported (chapters > 0), skip import and use existing data. "
@@ -72,10 +73,9 @@ class DndModuleTool(Tool):
         self.database = database
         self._migrate = migrate
         self._ready = False
-        embedder = BgeM3Embedder()
-        self.import_service = ModuleImportService(database, embedder=embedder)
+        self.import_service = ModuleImportService(database)
         self.progress_service = ModuleProgressService(database)
-        self.search_service = ModuleSearchService(database, embedder=embedder)
+        self.search_service = ModuleSearchService(database)
 
     @property
     def read_only(self) -> bool:
@@ -201,7 +201,10 @@ class DndModuleTool(Tool):
         store = VectorStore()
         if store.enabled:
             try:
-                result["chromadb"] = store.collection_stats("dnd_modules")
+                result["chromadb"] = [
+                    store.collection_stats(collection_name("dnd_modules", profile))
+                    for profile in configured_profiles()
+                ]
             except Exception:
                 result["chromadb"] = {"name": "dnd_modules", "error": "unreachable"}
         else:

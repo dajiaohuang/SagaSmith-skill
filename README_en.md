@@ -49,7 +49,7 @@ SagaSmith follows the open SKILL.md standard and is theoretically compatible wit
 Most D&D AI tools do one thing: roll dice, look up a rule, or write a paragraph. SagaSmith is the **full DM**:
 
 - 🏛️ **Campaign Management** — SQLite/PostgreSQL-backed campaign CRUD, Snapshot save/load/verify/undo, delta recaps, campaign-scoped long-term memory, event log, and module progress tracking
-- 🎲 **Rule Adjudication** — BGE-M3 Dense Vector search over SRD 5.2.1 (20 rule files, CC-BY-4.0), exact-name + full-text + semantic hybrid retrieval
+- 🎲 **Rule Adjudication** — Configurable BGE-M3 / BGE Small Dense Vector search over SRD 5.2.1 (20 rule files, CC-BY-4.0), exact-name + full-text + semantic hybrid retrieval
 - ✍️ **Module Generation** — 5 types (one-shot / short / medium / long / sandbox) × 25 narrative paradigms, multi-step progressive generation, auto-import into database
 - ⚔️ **Combat Engine** — True d20 rolls, initiative/turn/hit/damage/save calculation, XP & leveling
 - 🎭 **Minthara Persona** — Lawful Evil DM, strict yet cold-humored, never pulls punches, never leaks hidden info
@@ -67,7 +67,7 @@ User: Import SRD rulebooks
 
 Agent:
 📚 Parsing SRD 5.2.1 (20 files)...
-   Chunks: 2,847 · BGE-M3 embeddings: 2,847 (1024-dim)
+   Chunks: 2,847 · BGE embeddings: 2,847 (1024/512/384-dim by profile)
    Books: PHB (2024) · DMG (2024) · Monster Manual (2025)
    ✅ Index ready
 ```
@@ -290,7 +290,7 @@ SagaSmith-skills/
 ├── domain/                     # Business logic (pure Python, zero framework deps)
 │   ├── db/                     #   ORM + snapshots + recap/memory + migrations
 │   ├── modules/                #   Module chunking, PDF parsing, scene indexing
-│   ├── rules/                  #   BGE-M3 embeddings, Markdown parsing, rule ingestion
+│   ├── rules/                  #   BGE profile embeddings, Markdown parsing, rule ingestion
 │   └── engine/                 #   Dice, checks, combat resolution, XP, template factory
 ├── data/srd/                   # SRD 5.2.1 English source files (20 × CC-BY-4.0)
 └── data/srd-zh/                # SRD Chinese translation (optional submodule)
@@ -304,7 +304,7 @@ SagaSmith-skills/
 |------------|---------|
 | Python 3.11+ | Domain runtime |
 | SQLAlchemy | Database ORM |
-| FlagEmbedding | BGE-M3 Dense Vector retrieval |
+| FlagEmbedding | BGE-M3 / BGE Small Dense Vector retrieval |
 | markitdown | PDF / DOCX module import |
 
 ---

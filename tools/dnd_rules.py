@@ -12,9 +12,9 @@ from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import current_request_context
 from domain.db.database import Database
 from domain.db.models import RuleChunk, RulePublication, RuleSet
-from domain.rules.embedding import BgeM3Embedder
 from domain.rules.ingest import ensure_bundled_rules_ingested
 from domain.rules.search import RuleSearchService
+from domain.rules.embedding import collection_name, configured_profiles
 from domain.vector.client import VectorStore
 
 
@@ -48,7 +48,8 @@ class DndRulesTool(Tool):
 
     name = "dnd_rules"
     description = (
-        "Search the versioned D&D rules database with exact, full-text, and BGE-M3 dense "
+        "Search the versioned D&D rules database with exact, full-text, and configured "
+        "BGE dense "
         "retrieval. Use campaign_id when adjudicating a campaign so only its pinned rules "
         "and supplements are searched. Expand a returned chunk before quoting a full rule."
     )
@@ -62,7 +63,7 @@ class DndRulesTool(Tool):
         self.database = database
         self._migrate = migrate
         self._ready = False
-        self.search_service = RuleSearchService(database, embedder=BgeM3Embedder())
+        self.search_service = RuleSearchService(database)
 
     @property
     def read_only(self) -> bool:
@@ -128,7 +129,10 @@ class DndRulesTool(Tool):
         store = VectorStore()
         if store.enabled:
             try:
-                result["chromadb"] = store.collection_stats("dnd_rules")
+                result["chromadb"] = [
+                    store.collection_stats(collection_name("dnd_rules", profile))
+                    for profile in configured_profiles()
+                ]
             except Exception:
                 result["chromadb"] = {"name": "dnd_rules", "error": "unreachable"}
         else:

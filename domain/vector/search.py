@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..rules.embedding import EmbeddingProfile
 from .client import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -19,13 +20,14 @@ def chroma_dense_search(
     query_vector: list[float],
     where: dict[str, Any] | None = None,
     *,
+    profile: EmbeddingProfile | None = None,
     limit: int = 50,
 ) -> list[tuple[str, float]]:
     """Search a ChromaDB collection and return ``(chunk_id, similarity)`` pairs.
 
     Args:
         collection_name: ``"dnd_rules"`` or ``"dnd_modules"``.
-        query_vector: Normalised 1024-dim BGE-M3 embedding.
+        query_vector: Normalized embedding from the collection's bound BGE profile.
         where: Optional ChromaDB metadata filter dict (e.g.
                ``{"campaign_id": "abc"}`` or
                ``{"rule_set_id": "x", "publication_id": {"$in": ["a","b"]}}``).
@@ -43,7 +45,11 @@ def chroma_dense_search(
         return []
 
     try:
-        coll = store.collection(collection_name)
+        coll = (
+            store.collection_for(collection_name, profile)
+            if profile is not None
+            else store.collection(collection_name)
+        )
     except Exception:
         logger.exception("Failed to access ChromaDB collection %r", collection_name)
         return []

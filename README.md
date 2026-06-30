@@ -49,7 +49,7 @@ SagaSmith 遵循 SKILL.md 开放标准，理论上支持所有兼容该标准的
 大多数 D&D AI 工具只做一件事：掷骰、查规则、或者写一段描述。SagaSmith 是**完整的 DM**：
 
 - 🏛️ **战役管理** — SQLite/PostgreSQL 数据库驱动，完整的 campaign CRUD、Snapshot 存档/读档/校验/撤销、差量剧情回顾、战役长期记忆、事件日志与模组进度追踪
-- 🎲 **规则裁判** — BGE-M3 Dense Vector 检索 SRD 5.2.1（20 个规则文件，CC-BY-4.0），精确+全文+语义混合搜索
+- 🎲 **规则裁判** — 可配置 BGE-M3 / BGE Small Dense Vector 检索 SRD 5.2.1（20 个规则文件，CC-BY-4.0），精确+全文+语义混合搜索
 - ✍️ **模组生成** — 5 种类型（one-shot / short / medium / long / sandbox）× 25 种叙事范式，多步渐进生成，自动入库
 - ⚔️ **战斗引擎** — d20 真实掷骰、先攻/回合/命中/伤害/豁免计算、XP 与升级
 - 🎭 **明萨拉人格** — 守序邪恶 DM，严格但不失冷幽默，从不放水、从不泄露隐藏信息
@@ -67,7 +67,7 @@ SagaSmith 遵循 SKILL.md 开放标准，理论上支持所有兼容该标准的
 
 Agent:
 📚 解析 SRD 5.2.1 (20 文件)...
-   规则块: 2,847 · BGE-M3 嵌入: 2,847 (1024 维)
+   规则块: 2,847 · BGE 嵌入: 2,847 (按 profile 使用 1024/512/384 维)
    规则书: 玩家手册(2024) · 城主指南(2024) · 怪物图鉴(2025)
    ✅ 索引就绪
 ```
@@ -289,7 +289,7 @@ SagaSmith-skills/
 ├── domain/                     # 业务逻辑（纯 Python，零框架依赖）
 │   ├── db/                     #   ORM + 存档 + 回顾/记忆 + 迁移
 │   ├── modules/                #   模组分块、PDF 解析、场景索引
-│   ├── rules/                  #   BGE-M3 嵌入、Markdown 解析、规则摄入
+│   ├── rules/                  #   BGE profile 嵌入、Markdown 解析、规则摄入
 │   └── engine/                 #   骰子、检定、战斗结算、XP、模板工厂
 ├── data/srd/                   # SRD 5.2.1 英文源文件（20 × CC-BY-4.0）
 └── data/srd-zh/                # SRD 中文翻译（可选子模块）
@@ -303,7 +303,7 @@ SagaSmith-skills/
 |------|------|
 | Python 3.11+ | domain 运行时 |
 | SQLAlchemy | 数据库 ORM |
-| FlagEmbedding | BGE-M3 Dense Vector 检索 |
+| FlagEmbedding | BGE-M3 / BGE Small Dense Vector 检索 |
 | markitdown | PDF / DOCX 模组导入 |
 
 ---

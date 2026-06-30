@@ -18,6 +18,8 @@ from .events import CampaignEventService
 from .models import (
     Campaign,
     EmbeddingModel,
+    ModuleChunk,
+    ModuleSource,
     RuleChunk,
     RulePublication,
     RuleSection,
@@ -31,6 +33,7 @@ from .user_context import read_player_roles, write_player_roles
 from ..modules.search import ModuleSearchService
 from ..rules.ingest import RuleIngestService
 from ..rules.search import RuleSearchService
+from ..vector.client import VectorStore
 
 
 def _emit(value: Any) -> None:
@@ -217,7 +220,184 @@ def _parser() -> argparse.ArgumentParser:
     )
     rule_commands.add_parser("tree")
     rule_commands.add_parser("status")
+
+    vector = commands.add_parser("vector")
+    vector_commands = vector.add_subparsers(dest="action", required=True)
+    vector_commands.add_parser("status")
+    vector_commands.add_parser("reindex")
     return parser
+
+
+def _batched(items: list[Any], size: int):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+def _vector_status(store: VectorStore) -> dict[str, Any]:
+    from ..rules.embedding import (
+        EMBEDDING_PROFILES,
+        collection_name,
+        configured_profiles,
+        cuda_available,
+        embedding_mode,
+    )
+
+    profiles = configured_profiles()
+    has_cuda = cuda_available()
+    return {
+        "enabled": store.enabled,
+        "url": store.configured_url(),
+        "path": str(store.configured_path()) if store.configured_path() else None,
+        "embedding": {
+            "device_mode": embedding_mode(),
+            "cuda_available": has_cuda,
+            "selected_profiles": [profile.key for profile in profiles],
+            "available_profiles": [
+                {
+                    "key": profile.key,
+                    "model": profile.model_name,
+                    "dimensions": profile.dimensions,
+                    "language": profile.language,
+                }
+                for profile in EMBEDDING_PROFILES.values()
+            ],
+            "first_use_recommendation": (
+                ["bge_m3"]
+                if has_cuda
+                else ["bge_small_zh_v1_5", "bge_small_en_v1_5"]
+            ),
+            "note": (
+                "Model choices are optional and are not forced by detected hardware. "
+                "Changing profiles requires rebuilding dense indexes."
+            ),
+        },
+        "collections": [
+            store.collection_stats(collection_name(base, profile))
+            for base in ("dnd_rules", "dnd_modules", "dnd_campaign_memories")
+            for profile in profiles
+        ],
+    }
+
+
+def _vector_reindex(database: Database, store: VectorStore) -> dict[str, int]:
+    """Rebuild model-isolated Chroma indexes using the selected profiles."""
+    from ..rules.embedding import (
+        BgeM3Embedder,
+        collection_name,
+        configured_profiles,
+        detect_text_language,
+        profile_for_language,
+    )
+    from ..rules.ingest import _ensure_embedding_model
+
+    if not store.enabled:
+        raise RuntimeError("ChromaDB is not enabled")
+    for base_name in ("dnd_rules", "dnd_modules"):
+        for profile in configured_profiles():
+            store.drop_collection(collection_name(base_name, profile))
+
+    results = {"dnd_rules": 0, "dnd_modules": 0}
+    with database.transaction() as session:
+        rule_rows = list(
+            session.execute(
+                select(RuleChunk, RuleSource, RuleSet, RulePublication)
+                .join(RuleSource, RuleSource.id == RuleChunk.source_id)
+                .join(RuleSet, RuleSet.id == RuleSource.rule_set_id)
+                .join(RulePublication, RulePublication.id == RuleSource.publication_id)
+                .order_by(RuleChunk.source_id, RuleChunk.chunk_index)
+            )
+        )
+        grouped_rules: dict[Any, list[Any]] = {}
+        for row in rule_rows:
+            grouped_rules.setdefault(profile_for_language(row[2].locale), []).append(row)
+        for profile, rows in grouped_rules.items():
+            embedder = BgeM3Embedder(profile=profile, show_progress=True)
+            model_row = _ensure_embedding_model(session, embedder)
+            collection = store.collection_for("dnd_rules", profile)
+            for batch in _batched(rows, 50):
+                texts = [
+                    (
+                        f"{rule_set.game_system} | {rule_set.edition} | {rule_set.release}\n"
+                        f"{publication.name} | {chunk.breadcrumb}\n{chunk.chunk_text}"
+                    )
+                    for chunk, _source, rule_set, publication in batch
+                ]
+                vectors = embedder.encode(texts)
+                for (chunk, _source, _rule_set, _publication), vector in zip(
+                    batch, vectors, strict=True
+                ):
+                    chunk.embedding_model_id = model_row.id
+                    chunk.embedding_json = vector
+                collection.upsert(
+                    ids=[chunk.id for chunk, *_rest in batch],
+                    embeddings=vectors,
+                    metadatas=[
+                        {
+                            "chunk_id": chunk.id,
+                            "rule_set_id": source.rule_set_id or "",
+                            "publication_id": source.publication_id or "",
+                            "source_id": source.id,
+                            "section_id": chunk.section_id or "",
+                            "chunk_index": chunk.chunk_index,
+                            "chunk_type": "section",
+                            "content_hash": chunk.content_hash,
+                            "version": 1,
+                        }
+                        for chunk, source, *_rest in batch
+                    ],
+                )
+                results["dnd_rules"] += len(batch)
+
+        module_rows = list(
+            session.execute(
+                select(ModuleChunk, ModuleSource)
+                .join(ModuleSource, ModuleSource.id == ModuleChunk.module_id)
+                .order_by(ModuleChunk.module_id, ModuleChunk.chunk_index)
+            )
+        )
+        module_texts: dict[str, str] = {}
+        for chunk, source in module_rows:
+            module_texts[source.id] = (
+                module_texts.get(source.id, "") + f"\n{chunk.chunk_text}"
+            )
+        grouped_modules: dict[Any, list[Any]] = {}
+        for row in module_rows:
+            language = detect_text_language(module_texts[row[1].id])
+            grouped_modules.setdefault(profile_for_language(language), []).append(row)
+        for profile, rows in grouped_modules.items():
+            embedder = BgeM3Embedder(profile=profile, show_progress=True)
+            model_row = _ensure_embedding_model(session, embedder)
+            collection = store.collection_for("dnd_modules", profile)
+            for batch in _batched(rows, 50):
+                texts = [
+                    f"{source.name} | {chunk.breadcrumb}\n{chunk.chunk_text}"
+                    for chunk, source in batch
+                ]
+                vectors = embedder.encode(texts)
+                for (chunk, _source), vector in zip(batch, vectors, strict=True):
+                    chunk.embedding_model_id = model_row.id
+                    chunk.embedding_json = vector
+                collection.upsert(
+                    ids=[chunk.id for chunk, _source in batch],
+                    embeddings=vectors,
+                    metadatas=[
+                        {
+                            "chunk_id": chunk.id,
+                            "campaign_id": source.campaign_id,
+                            "module_id": chunk.module_id,
+                            "chapter_id": chunk.chapter_id,
+                            "scene_id": chunk.scene_id or "",
+                            "chunk_index": chunk.chunk_index,
+                            "chunk_type": chunk.chunk_type,
+                            "content_hash": chunk.content_hash,
+                            "version": 1,
+                        }
+                        for chunk, source in batch
+                    ],
+                )
+                results["dnd_modules"] += len(batch)
+        session.flush()
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -398,6 +578,12 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             )
             _emit({**asdict(result), "count": result.count, "user_md": user_file})
+        elif args.area == "vector":
+            store = VectorStore()
+            if args.action == "status":
+                _emit(_vector_status(store))
+            else:
+                _emit(_vector_reindex(database, store))
         else:
             ingest_service = RuleIngestService(database)
             search_service = RuleSearchService(database)
